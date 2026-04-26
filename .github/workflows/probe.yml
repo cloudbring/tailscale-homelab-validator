@@ -25,7 +25,7 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci-validator
-          version: 1.96.5
+          version: 1.96.4
 
       - name: Run probe
         env:
