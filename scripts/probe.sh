@@ -19,7 +19,10 @@ TAILNET_DOMAIN="tail095fb2.ts.net"
 
 # Expected peers (HostName from tailscale status --json).
 # An expected peer is FAIL if absent or offline > 24h.
-EXPECTED_PEERS=(pox wormhole silverstone iphone-13-pro-max)
+# Only infrastructure peers are required — personal client devices (Mac, phones)
+# are not the validator's concern. The validator may not see them in its netmap
+# anyway depending on ACL scoping.
+EXPECTED_PEERS=(pox wormhole)
 
 # Subnet router(s) — at least one must be advertising the LAN route.
 EXPECTED_SUBNET_ROUTERS=(pox wormhole)
@@ -67,6 +70,11 @@ STATUS_JSON="$(tailscale status --json 2>/dev/null)" || {
   fail "tailscale-status" "tailscale status --json exited non-zero"
   STATUS_JSON='{}'
 }
+
+# Diagnostic: list peers visible to the validator, with route advertisements
+echo "── Visible tailnet peers (from validator's netmap):"
+echo "$STATUS_JSON" | jq -r '.Peer | to_entries[] | "\(.value.HostName)\t\(.value.TailscaleIPs[0] // "-")\t\(.value.Online)\tAllowedIPs: \(.value.AllowedIPs // [] | join(","))"' 2>/dev/null || echo "  (jq parse failed)"
+echo
 
 # ────────────────────────────────────────────────────────────────────
 # Check 1: Peer health
