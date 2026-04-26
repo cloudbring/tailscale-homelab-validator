@@ -26,7 +26,6 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci-validator
           version: 1.96.4
-          args: --accept-routes
 
       - name: Run probe
         env:
