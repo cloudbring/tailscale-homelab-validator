@@ -1,31 +1,18 @@
 # Known Issues & Future Work
 
-## Open
-
-### Subnet routing through `wormhole` (TrueNAS) doesn't forward TCP
-
-**Discovered:** 2026-04-25 during initial validator dry runs.
-
-**Symptom:** When the validator routes via wormhole's advertised `192.168.1.0/24` subnet route, TCP connections to LAN-side hosts (e.g. `192.168.1.50:8006` Proxmox UI, `192.168.1.50:53` Pi-hole DNS) time out. TCP to wormhole's own LAN IP (`192.168.1.60:443`) works because no forwarding is required.
-
-**What was verified:**
-- IPv4 forwarding is enabled on the TrueNAS host (`/proc/sys/net/ipv4/ip_forward = 1`)
-- The Tailscale Apps container has `NET_ADMIN`, `NET_RAW`, `SYS_MODULE` capabilities
-- `tailscale ping --tsmp 192.168.1.50` succeeds — Tailscale considers the route valid
-- pox's subnet route advertisement appears suppressed in the validator's netmap once wormhole became primary
-
-**Likely causes (untested):**
-- Tailscale Docker container in TrueNAS Apps may not have set up SNAT/iptables rules correctly for forwarding
-- pox's subnet-route approval may have been displaced when wormhole was authorized
-
-**Workaround for v1:** the probe uses direct tailnet IPs (`100.82.79.26`, `100.96.34.98`) instead of LAN IPs. This bypasses subnet routing entirely while still validating that the homelab tailnet endpoints are reachable from outside.
-
-**Next steps:**
-1. SSH to TrueNAS, exec into the Tailscale container, run `tailscale debug netmap` and `iptables -L -t nat`
-2. Check whether wormhole's `tailscale up --advertise-routes=192.168.1.0/24` actually applied (try `tailscale set --advertise-routes=192.168.1.0/24` to ensure)
-3. Verify pox's subnet route is still approved in the admin console
-4. Once subnet routing is working: re-add LAN-IP probes and Pi-hole DNS check to `scripts/probe.sh`
-
 ## Resolved
 
-(none yet)
+### Subnet routing through `wormhole` doesn't forward TCP
+
+**Discovered:** 2026-04-25 during initial validator dry runs.
+**Resolved:** 2026-04-26.
+
+**Root cause:** Not a forwarding issue at all. A parallel investigation traced the symptom to **`pox` and `silverstone` both having `RouteAll: true`** and accepting `wormhole`'s `192.168.1.0/24` advertisement. The Linux kernel on `pox` then routed return traffic for any LAN client through `tailscale0` instead of `vmbr0`, dropping packets that Tailscale couldn't deliver. Same root cause as the gitea push hang documented in the openclaw repo at `docs/gitea/push-hang-investigation-2026-04-25.md`.
+
+**Fix:** `tailscale set --accept-routes=false` on both `pox` (Proxmox) and `silverstone` (Mac). Both peers are LAN-resident and don't need `192.168.1.0/24` tunnelled. `wormhole` continues to advertise the route — the validator and any genuinely off-LAN client (e.g. Mac on cellular) still get subnet routing through it.
+
+**Verification:** `ip route get 192.168.1.110` on `pox` now resolves via `vmbr0` (was `tailscale0`). LAN clients reach all `192.168.1.x` services. Validator's subnet-route probes pass.
+
+## Open
+
+(none currently)

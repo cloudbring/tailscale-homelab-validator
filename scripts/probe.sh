@@ -20,14 +20,30 @@ TAILNET_DOMAIN="tail095fb2.ts.net"
 # Infrastructure peers — must be online for the homelab to be reachable.
 EXPECTED_PEERS=(pox wormhole)
 
-# Direct tailnet IP TCP probes (no subnet routing required).
-# Format: tailnet-ip:port:label
-TCP_PROBES=(
-  "100.82.79.26:8006:proxmox-ui"
-  "100.82.79.26:22:pox-ssh"
-  "100.96.34.98:443:wormhole-https"
-  "100.96.34.98:22:wormhole-ssh"
+# Direct tailnet IP TCP probes — exercise the WireGuard mesh directly,
+# bypassing subnet routing.
+DIRECT_TCP_PROBES=(
+  "100.82.79.26:8006:proxmox-ui-direct"
+  "100.82.79.26:22:pox-ssh-direct"
+  "100.96.34.98:443:wormhole-https-direct"
+  "100.96.34.98:22:wormhole-ssh-direct"
 )
+
+# Subnet-route TCP probes — exercise wormhole as a subnet router into 192.168.1.0/24.
+# These broke during initial dry runs because pox/silverstone's --accept-routes=true
+# was hijacking return paths through tailscale0; fixed 2026-04-26 by setting
+# --accept-routes=false on both LAN-resident peers.
+SUBNET_TCP_PROBES=(
+  "192.168.1.50:8006:proxmox-ui-via-subnet"
+  "192.168.1.50:22:pox-ssh-via-subnet"
+  "192.168.1.50:10022:gitea-ssh-via-subnet"
+  "192.168.1.50:443:caddy-via-subnet"
+  "192.168.1.60:443:truenas-via-subnet"
+)
+
+# Pi-hole DNS check — homelab DNS via subnet route.
+PIHOLE_DNS="192.168.1.50"
+PIHOLE_NAMES=("git.lab.mwangi.us" "kuma.lab.mwangi.us")
 
 STALE_PEER_SECONDS=$((24 * 3600))
 
@@ -111,13 +127,41 @@ done
 # Check 3: TCP reachability via direct tailnet
 # ────────────────────────────────────────────────────────────────────
 
-echo "── Probing TCP services via direct tailnet IPs..."
-for probe in "${TCP_PROBES[@]}"; do
+echo "── Probing TCP via direct tailnet IPs..."
+for probe in "${DIRECT_TCP_PROBES[@]}"; do
   IFS=':' read -r host port label <<< "$probe"
   if nc -zw5 "$host" "$port" 2>/dev/null; then
     ok "$label ($host:$port) reachable"
   else
     fail "tcp-unreachable" "$label ($host:$port) not reachable"
+  fi
+done
+
+# ────────────────────────────────────────────────────────────────────
+# Check 4: TCP reachability via wormhole subnet route
+# ────────────────────────────────────────────────────────────────────
+
+echo "── Probing TCP via wormhole subnet route (192.168.1.0/24)..."
+for probe in "${SUBNET_TCP_PROBES[@]}"; do
+  IFS=':' read -r host port label <<< "$probe"
+  if nc -zw5 "$host" "$port" 2>/dev/null; then
+    ok "$label ($host:$port) reachable"
+  else
+    fail "tcp-unreachable" "$label ($host:$port) not reachable"
+  fi
+done
+
+# ────────────────────────────────────────────────────────────────────
+# Check 5: Pi-hole DNS via subnet route
+# ────────────────────────────────────────────────────────────────────
+
+echo "── Querying Pi-hole DNS via subnet route..."
+for name in "${PIHOLE_NAMES[@]}"; do
+  ANSWER="$(dig "@${PIHOLE_DNS}" "$name" +short +time=3 +tries=2 2>/dev/null | head -1)"
+  if [ -n "$ANSWER" ] && [[ "$ANSWER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ok "Pi-hole resolves $name → $ANSWER"
+  else
+    fail "pihole-dns" "$name returned no answer (or non-IP) from $PIHOLE_DNS"
   fi
 done
 
