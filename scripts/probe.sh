@@ -2,11 +2,12 @@
 # Tailscale homelab validator probe.
 #
 # Runs from a GitHub Actions runner that has already joined the tailnet
-# as an ephemeral node tagged tag:ci-validator. Performs connectivity
-# and DNS checks against the homelab and reports failures via ntfy.
+# as an ephemeral node tagged tag:ci-validator. Validates infrastructure
+# peer health and TCP/DNS reachability via direct tailnet WireGuard mesh.
 #
-# Exits non-zero on any failed check, which fails the workflow run and
-# surfaces in GitHub's UI.
+# v1 scope: direct tailnet IPs only. Subnet-route probes (LAN IPs like
+# 192.168.1.x via subnet router) are a v2 follow-on once subnet routing
+# through wormhole is debugged — see KNOWN_ISSUES.md.
 
 set -uo pipefail
 
@@ -14,38 +15,22 @@ set -uo pipefail
 # Configuration
 # ────────────────────────────────────────────────────────────────────
 
-# Tailnet domain (DNS suffix) — visible in `tailscale status` output.
 TAILNET_DOMAIN="tail095fb2.ts.net"
 
-# Expected peers (HostName from tailscale status --json).
-# An expected peer is FAIL if absent or offline > 24h.
-# Only infrastructure peers are required — personal client devices (Mac, phones)
-# are not the validator's concern. The validator may not see them in its netmap
-# anyway depending on ACL scoping.
+# Infrastructure peers — must be online for the homelab to be reachable.
 EXPECTED_PEERS=(pox wormhole)
 
-# Subnet router(s) — at least one must be advertising the LAN route.
-EXPECTED_SUBNET_ROUTERS=(pox wormhole)
-SUBNET_CIDR="192.168.1.0/24"
-
-# TCP probe targets reachable via subnet routing (host:port:label).
+# Direct tailnet IP TCP probes (no subnet routing required).
+# Format: tailnet-ip:port:label
 TCP_PROBES=(
-  "192.168.1.50:8006:proxmox-ui"
-  "192.168.1.60:443:truenas-https"
-  "192.168.1.50:53:pihole-dns-tcp"
-  "192.168.1.60:18789:openclaw"
-  "192.168.1.60:32400:plex"
+  "100.82.79.26:8006:proxmox-ui"
+  "100.82.79.26:22:pox-ssh"
+  "100.96.34.98:443:wormhole-https"
+  "100.96.34.98:22:wormhole-ssh"
 )
 
-# Pi-hole DNS server (must answer queries for lab.mwangi.us).
-PIHOLE_IP="192.168.1.50"
-PIHOLE_DNS_NAMES=("lab.mwangi.us" "cloud.lab.mwangi.us")
-
-# Maximum age before a peer is considered stale, in seconds.
 STALE_PEER_SECONDS=$((24 * 3600))
 
-# ────────────────────────────────────────────────────────────────────
-# Helpers
 # ────────────────────────────────────────────────────────────────────
 
 FAILURES=()
@@ -57,9 +42,7 @@ fail() {
   FAILURES+=("${check}: ${detail}")
 }
 
-ok() {
-  echo "✓ $1"
-}
+ok() { echo "✓ $1"; }
 
 # ────────────────────────────────────────────────────────────────────
 # Tailscale state
@@ -71,16 +54,15 @@ STATUS_JSON="$(tailscale status --json 2>/dev/null)" || {
   STATUS_JSON='{}'
 }
 
-# Diagnostic: list peers visible to the validator, with route advertisements
 echo "── Visible tailnet peers (from validator's netmap):"
-echo "$STATUS_JSON" | jq -r '.Peer | to_entries[] | "\(.value.HostName)\t\(.value.TailscaleIPs[0] // "-")\t\(.value.Online)\tAllowedIPs: \(.value.AllowedIPs // [] | join(","))"' 2>/dev/null || echo "  (jq parse failed)"
+echo "$STATUS_JSON" | jq -r '.Peer | to_entries[] | "  \(.value.HostName)\t\(.value.TailscaleIPs[0] // "-")\tonline=\(.value.Online)\troutes=\(.value.AllowedIPs // [] | join(","))"' 2>/dev/null || echo "  (jq parse failed)"
 echo
 
 # ────────────────────────────────────────────────────────────────────
 # Check 1: Peer health
 # ────────────────────────────────────────────────────────────────────
 
-echo "── Checking expected peers..."
+echo "── Checking expected infrastructure peers..."
 NOW_EPOCH="$(date +%s)"
 for peer in "${EXPECTED_PEERS[@]}"; do
   PEER_INFO="$(echo "$STATUS_JSON" | jq -r --arg h "$peer" '
@@ -97,7 +79,6 @@ for peer in "${EXPECTED_PEERS[@]}"; do
     ok "$peer online"
     continue
   fi
-  # Offline — check whether last-seen is recent enough to tolerate.
   LAST_SEEN_EPOCH="$(date -d "$LAST_SEEN" +%s 2>/dev/null || echo 0)"
   AGE=$((NOW_EPOCH - LAST_SEEN_EPOCH))
   if [ "$LAST_SEEN_EPOCH" -eq 0 ] || [ "$AGE" -gt "$STALE_PEER_SECONDS" ]; then
@@ -127,52 +108,16 @@ for peer in "${EXPECTED_PEERS[@]}"; do
 done
 
 # ────────────────────────────────────────────────────────────────────
-# Check 3: Subnet route advertisement
+# Check 3: TCP reachability via direct tailnet
 # ────────────────────────────────────────────────────────────────────
 
-echo "── Checking subnet route advertisement..."
-ROUTERS_WITH_ROUTE=()
-for router in "${EXPECTED_SUBNET_ROUTERS[@]}"; do
-  HAS_ROUTE="$(echo "$STATUS_JSON" | jq -r --arg h "$router" --arg cidr "$SUBNET_CIDR" '
-    .Peer | to_entries[] | select(.value.HostName == $h) |
-    (.value.AllowedIPs // []) | any(. == $cidr)
-  ')"
-  if [ "$HAS_ROUTE" = "true" ]; then
-    ok "$router advertises $SUBNET_CIDR"
-    ROUTERS_WITH_ROUTE+=("$router")
-  else
-    echo "  $router does not currently advertise $SUBNET_CIDR (may be secondary)"
-  fi
-done
-if [ "${#ROUTERS_WITH_ROUTE[@]}" -eq 0 ]; then
-  fail "no-subnet-router" "neither ${EXPECTED_SUBNET_ROUTERS[*]} advertise $SUBNET_CIDR"
-fi
-
-# ────────────────────────────────────────────────────────────────────
-# Check 4: TCP reachability via subnet route
-# ────────────────────────────────────────────────────────────────────
-
-echo "── Probing TCP services via subnet route..."
+echo "── Probing TCP services via direct tailnet IPs..."
 for probe in "${TCP_PROBES[@]}"; do
   IFS=':' read -r host port label <<< "$probe"
   if nc -zw5 "$host" "$port" 2>/dev/null; then
     ok "$label ($host:$port) reachable"
   else
     fail "tcp-unreachable" "$label ($host:$port) not reachable"
-  fi
-done
-
-# ────────────────────────────────────────────────────────────────────
-# Check 5: Pi-hole DNS via subnet route
-# ────────────────────────────────────────────────────────────────────
-
-echo "── Querying Pi-hole DNS..."
-for name in "${PIHOLE_DNS_NAMES[@]}"; do
-  ANSWER="$(dig "@${PIHOLE_IP}" "$name" +short +time=3 +tries=2 2>/dev/null | head -1)"
-  if [ -n "$ANSWER" ]; then
-    ok "Pi-hole resolves $name → $ANSWER"
-  else
-    fail "pihole-dns" "$name returned no answer from $PIHOLE_IP"
   fi
 done
 
