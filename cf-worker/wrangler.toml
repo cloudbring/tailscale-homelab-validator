@@ -1,0 +1,9 @@
+name = "validator-deadman"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+workers_dev = false
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+# Secret (set once): npx wrangler secret put NTFY_TOPIC

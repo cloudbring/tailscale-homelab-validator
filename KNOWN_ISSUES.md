@@ -16,11 +16,15 @@ homelab ran ~15 days with no external monitoring and no alert about the gap.
 1. Workflow re-enabled + verified green (first run 2026-07-11, all checks passed).
 2. `keepalive` job in `probe.yml`: every Monday's 00:0x run calls the
    workflows/enable API with `actions: write`, resetting the 60-day timer indefinitely.
-3. Dead-man's-switch moved outside GitHub: the factory's daily health-check routine
-   (cloudbring/factory `routines/health-check.md`, signal G1) checks this repo's most
-   recent run via the public API and files a Linear issue if the newest run is >2 h old
-   or ≥3 consecutive runs failed. A daily `Priority: min` ntfy heartbeat (00:0x run)
-   additionally makes silence human-visible.
+3. Dead-man's-switch moved outside GitHub: `cf-worker/` — a Cloudflare Worker cron
+   (free tier, no inactivity-disable policy) checks this repo's runs via the public
+   API every 30 min and alerts ntfy (urgent) if the newest run is >2 h old, 3
+   consecutive completed runs failed, or the GitHub API is unreachable. Deploy:
+   `cd cf-worker && npx wrangler secret put NTFY_TOPIC && npx wrangler deploy`.
+   (An earlier design wired this into the factory's health-check routine; reverted —
+   homelab monitoring shouldn't depend on the factory, and an LLM routine is the
+   wrong tool for a 5-line staleness check.) The daily `Priority: min` ntfy heartbeat
+   in probe.yml can be removed once the worker is deployed.
 
 **Verification:** `gh run list` shows the 2026-07-11 dispatched run `success`;
 keepalive/heartbeat conditions reviewed for the 00:00 leading-zero edge case.
