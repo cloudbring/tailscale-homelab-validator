@@ -32,3 +32,36 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: ./scripts/probe.sh
 
+      # Daily success heartbeat (first run after 00:00 UTC only) so silence is observable
+      - name: Heartbeat
+        if: github.event_name == 'schedule'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          if [ "$(date -u +%H)" = "00" ] && [ "$(date -u +%M)" -lt 15 ] && [ -n "${NTFY_TOPIC:-}" ]; then
+            curl -fsS -H "Title: Tailscale probe heartbeat" -H "Priority: min" \
+              -H "Tags: green_circle" -d "Probe alive $(date -u +%F)" \
+              "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null || true
+          fi
+
+  # GitHub disables scheduled workflows after 60 days without repo activity
+  # (exactly what happened 2026-06-25). Re-enabling via the API resets the
+  # timer, so this job keeps the whole workflow alive indefinitely.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Reset inactivity timer (Monday 00:0x run only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%u)" = "1" ] && [ "$(date -u +%H)" = "00" ] && [ "$(date -u +%M)" -lt 15 ]; then
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/probe.yml/enable"
+            echo "keepalive: inactivity timer reset"
+          else
+            echo "keepalive: skipped (not the Monday 00:0x run)"
+          fi
+

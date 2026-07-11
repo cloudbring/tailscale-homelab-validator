@@ -2,6 +2,29 @@
 
 ## Resolved
 
+### GitHub silently disabled the scheduled probe (60-day inactivity rule)
+
+**Discovered:** 2026-07-10 during the Project Atlas review — no probe runs since 2026-06-25.
+**Resolved:** 2026-07-11.
+
+**Root cause:** GitHub disables `schedule` triggers on any workflow after 60 days
+without repo activity (`disabled_inactivity`). Last push was 2026-04-25; the timer
+expired 2026-06-25. The monitor died silently — nothing watches the watcher, so the
+homelab ran ~15 days with no external monitoring and no alert about the gap.
+
+**Fix (three layers):**
+1. Workflow re-enabled + verified green (first run 2026-07-11, all checks passed).
+2. `keepalive` job in `probe.yml`: every Monday's 00:0x run calls the
+   workflows/enable API with `actions: write`, resetting the 60-day timer indefinitely.
+3. Dead-man's-switch moved outside GitHub: the factory's daily health-check routine
+   (cloudbring/factory `routines/health-check.md`, signal G1) checks this repo's most
+   recent run via the public API and files a Linear issue if the newest run is >2 h old
+   or ≥3 consecutive runs failed. A daily `Priority: min` ntfy heartbeat (00:0x run)
+   additionally makes silence human-visible.
+
+**Verification:** `gh run list` shows the 2026-07-11 dispatched run `success`;
+keepalive/heartbeat conditions reviewed for the 00:00 leading-zero edge case.
+
 ### Subnet routing through `wormhole` doesn't forward TCP
 
 **Discovered:** 2026-04-25 during initial validator dry runs.
