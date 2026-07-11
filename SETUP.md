@@ -48,6 +48,14 @@ gh secret set TS_OAUTH_SECRET     --body "<client-secret-from-step-1>"
 gh secret set NTFY_TOPIC          --body "<your-ntfy-topic>"
 ```
 
+> **Current topic (2026-07-11, deliberately not treated as secret):**
+> `emwangi-homelab` on **ntfy.sh** — NOT the lab's own ntfy server, because
+> these alerts must survive a lab outage. The same topic is the `NTFY_TOPIC`
+> secret of the `validator-deadman` Cloudflare Worker (`cf-worker/`). The
+> phone must be subscribed to `https://ntfy.sh/emwangi-homelab` — lesson of
+> 2026-07-11: 462 failure alerts went undelivered because the phone was only
+> subscribed to lab-server topics.
+
 **Path B — via the GitHub UI:**
 
 1. Open https://github.com/cloudbring/tailscale-homelab-validator/settings/secrets/actions

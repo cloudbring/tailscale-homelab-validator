@@ -53,3 +53,29 @@ test("boundary: exactly at 2h does not alert", () => {
   const v = evaluateRuns([run(120)], NOW);
   assert.equal(v.alert, false);
 });
+
+// --- edge probe evaluation ---
+import { evaluateEdge } from "./src/index.js";
+
+test("edge healthy: all endpoints ok", () => {
+  const v = evaluateEdge([
+    { url: "https://a", ok: true, detail: "HTTP 200" },
+    { url: "https://b", ok: true, detail: "HTTP 302" },
+  ]);
+  assert.equal(v.alert, false);
+});
+
+test("edge down: one endpoint failing lists it", () => {
+  const v = evaluateEdge([
+    { url: "https://a", ok: true, detail: "HTTP 200" },
+    { url: "https://b", ok: false, detail: "HTTP 530" },
+  ]);
+  assert.equal(v.alert, true);
+  assert.match(v.reason, /https:\/\/b: HTTP 530/);
+});
+
+test("edge down: network error detail propagates", () => {
+  const v = evaluateEdge([{ url: "https://a", ok: false, detail: "timeout" }]);
+  assert.equal(v.alert, true);
+  assert.match(v.reason, /timeout/);
+});
